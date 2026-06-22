@@ -35,6 +35,9 @@
   #term { width: 100%; }
   .wavebar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .wavehint { color: #76767f; font-size: .85rem; }
+  .wavesel { display: flex; flex-wrap: wrap; gap: 3px 14px; margin: 8px 0 0; font-size: .82rem; align-items: center; }
+  .wavesel label { color: #3a3a44; cursor: pointer; user-select: none; }
+  .wavesel input { vertical-align: middle; margin-right: 3px; }
   #waveBox { margin-top: 10px; overflow-x: auto; border: 1px solid #e1e1e8; border-radius: 8px; background: #fff; }
   #wave { display: block; }
 </style>
@@ -63,6 +66,7 @@
     <button id="waveBtn">Capture 128 cycles</button>
     <span class="wavehint" id="waveStatus">click to snapshot the first cycles after reset</span>
   </div>
+  <div id="waveSel" class="wavesel"></div>
   <div id="waveBox"><canvas id="wave" width="700" height="40"></canvas></div>
 
 <script type="module">
@@ -119,7 +123,12 @@
       document.getElementById('cyc').textContent = 'cycles: ' + m.cycles.toLocaleString();
       window.__lastTick = m;
     }
-    if (m.type === 'wave') { renderWave(m); window.__wave = m; document.getElementById('waveStatus').textContent = `captured ${m.n} cycles × ${m.signals.length} signals`; }
+    if (m.type === 'wave') {
+      waveData = m; window.__wave = m;
+      if (!waveSel) waveSel = new Set(m.signals.map((s) => s.name)); // first capture: show all
+      buildWaveSel(); drawWave();
+      document.getElementById('waveStatus').textContent = `captured ${m.n} cycles × ${m.signals.length} signals`;
+    }
   };
   worker.onerror = (e) => { statusEl.textContent = 'worker error: ' + e.message; window.__error = e.message; };
 
@@ -129,6 +138,22 @@
   document.getElementById('waveBtn').onclick = () => { document.getElementById('waveStatus').textContent = 'capturing...'; worker.postMessage({ cmd: 'wave', n: 128 }); };
   window.__startSim = () => worker.postMessage({ cmd: 'start' });
   window.__capture  = () => worker.postMessage({ cmd: 'wave', n: 128 });
+
+  // ---- waveform signal selector (add/remove any captured signal incl. internal registers) ----
+  let waveData = null, waveSel = null;
+  function buildWaveSel() {
+    const el = document.getElementById('waveSel'); if (!el || !waveData) return;
+    el.innerHTML = '<span class="wavehint">signals:</span> ' + waveData.signals.map((s) =>
+      `<label><input type="checkbox" ${waveSel.has(s.name) ? 'checked' : ''} data-sig="${s.name}">${s.name}</label>`).join('');
+    el.querySelectorAll('input').forEach((cb) => cb.onchange = () => {
+      if (cb.checked) waveSel.add(cb.dataset.sig); else waveSel.delete(cb.dataset.sig);
+      drawWave();
+    });
+  }
+  function drawWave() {
+    if (!waveData) return;
+    renderWave({ ...waveData, signals: waveData.signals.filter((s) => waveSel.has(s.name)) });
+  }
 
   // ---- cycle-accurate waveform renderer (canvas) ----
   function renderWave(d) {
