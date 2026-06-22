@@ -67,6 +67,8 @@ function loop() {
 // Cycle-accurate waveform snapshot: reset, drive defaults, run n cycles capturing every
 // port's low-32 value each cycle, then hand the per-signal sample arrays to the runner.
 function captureWave(n) {
+  if (!wave_run) { postMessage({ type: 'wave', n: 0, signals: [], unavailable: true }); return; }
+  const wasRunning = running;
   running = false;                       // pause free-run (a pending loop() will no-op)
   const NP = (cfg.ports || []).length;
   n = Math.max(1, Math.min(n || 128, cfg.wave_max || 512));
@@ -80,8 +82,12 @@ function captureWave(n) {
     return { name: p.name, dir: p.dir, width: p.width, samples };
   });
   postMessage({ type: 'wave', n, clock: cfg.clock, reset: cfg.reset, signals });
-  sim_reset(); driveDefaults();          // leave the model clean & ready
-  postMessage({ type: 'stopped' });
+  // Re-arm a clean model and RESUME the interactive run (if it was running) so the terminal stays
+  // typeable after a capture — capture is a from-reset snapshot, so the SoC re-boots cleanly.
+  sim_reset(); driveDefaults(); rxQueue = [];
+  if (TERM) postMessage({ type: 'uartclear' });
+  if (wasRunning) { cycles = 0; t0 = performance.now(); running = true; postMessage({ type: 'started' }); loop(); }
+  else postMessage({ type: 'stopped' });
 }
 
 onmessage = (e) => {
