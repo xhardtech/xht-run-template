@@ -3,29 +3,33 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<meta name="color-scheme" content="dark" />
+<meta name="color-scheme" content="light" />
 <title>Backend B (Verilator) - generic RTL in WASM</title>
 <style>
-  :root { color-scheme: dark; }
-  body { font-family: system-ui, -apple-system, sans-serif; max-width: 680px; margin: 40px auto;
-         padding: 0 16px; background: #0d0d12; color: #ededf2; -webkit-font-smoothing: antialiased; }
-  h1 { font-size: 1.25rem; color: #ededf2; letter-spacing: -.01em; }
-  p { color: #b6b6c4; }
-  a { color: #f59e0b; }
-  .card { border: 1px solid #26262f; border-radius: 10px; padding: 20px; margin-top: 16px; background: #16161f; }
-  .out { font-size: 1.6rem; font-variant-numeric: tabular-nums; font-weight: 700; color: #f59e0b; }
-  .cps { font-size: 1.05rem; color: #9a9aa8; font-variant-numeric: tabular-nums; }
+  /* Forced LIGHT theme: explicit colors + color-scheme:light so night/incognito mode can't
+     darken it (the previous theme-less version went black in forced-dark; a dark theme read too
+     dark embedded). Bright + high-contrast, standalone and embedded in the dark /run page. */
+  :root { color-scheme: light; }
+  body { font-family: system-ui, -apple-system, sans-serif; max-width: 680px; margin: 28px auto;
+         padding: 0 16px; background: #ffffff; color: #1a1a22; -webkit-font-smoothing: antialiased; }
+  h1 { font-size: 1.25rem; color: #14141a; letter-spacing: -.01em; }
+  p { color: #555560; }
+  a { color: #b45309; }
+  .card { border: 1px solid #e4e4ea; border-radius: 10px; padding: 20px; margin-top: 16px;
+          background: #f7f7fa; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
+  .out { font-size: 1.6rem; font-variant-numeric: tabular-nums; font-weight: 800; color: #b45309; }
+  .cps { font-size: 1.05rem; color: #5b5b66; font-variant-numeric: tabular-nums; }
   button { font-size: 1rem; padding: 8px 16px; margin-right: 8px; border-radius: 8px;
-           border: 1px solid #3a3a48; background: #1e1e28; color: #ededf2; cursor: pointer; font-family: inherit; }
-  button:hover { border-color: #56566a; background: #26262f; }
-  #status { color: #8c8c9c; margin-top: 10px; font-size: 0.9rem; }
-  code { background: #1e1e28; color: #f4c87a; padding: 1px 5px; border-radius: 4px;
+           border: 1px solid #ccccd4; background: #ffffff; color: #1a1a22; cursor: pointer; font-family: inherit; }
+  button:hover { border-color: #b45309; background: #fff7ed; }
+  #status { color: #76767f; margin-top: 10px; font-size: 0.9rem; }
+  code { background: #ececf1; color: #b45309; padding: 1px 5px; border-radius: 4px;
          font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .9em; }
-  table { border-collapse: collapse; margin-top: 8px; width: 100%; }
-  td, th { border: 1px solid #2a2a35; padding: 4px 10px; text-align: left; }
-  th { color: #8c8c9c; font-weight: 600; font-size: .85rem; }
-  td { color: #ededf2; }
-  td.v { font-variant-numeric: tabular-nums; color: #f59e0b; font-weight: 600; }
+  table { border-collapse: collapse; margin-top: 8px; width: 100%; background: #fff; }
+  td, th { border: 1px solid #e1e1e8; padding: 4px 10px; text-align: left; }
+  th { color: #6a6a74; font-weight: 600; font-size: .85rem; background: #f2f2f6; }
+  td { color: #1a1a22; }
+  td.v { font-variant-numeric: tabular-nums; color: #b45309; font-weight: 700; }
 </style>
 </head>
 <body>
