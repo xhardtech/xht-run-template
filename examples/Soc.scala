@@ -182,6 +182,11 @@ class Soc extends Module {
   val uart_tx       = IO(Output(UInt(8.W)))
   val uart_rx_valid = IO(Input(Bool()))
   val uart_rx       = IO(Input(UInt(8.W)))
+  // Debug taps: expose internal CPU registers so the waveform can show the core executing.
+  val dbg_pc    = IO(Output(UInt(32.W)))
+  val dbg_instr = IO(Output(UInt(32.W)))
+  val dbg_a0    = IO(Output(UInt(32.W)))   // x10
+  val dbg_t0    = IO(Output(UInt(32.W)))   // x5
 
   // ---- build program image ----
   val (romWords, dmemBytes) = Program.build()
@@ -424,6 +429,10 @@ class Soc extends Module {
   }
 
   // ---- commit PC ----
+  dbg_pc := pc
+  dbg_instr := instr
+  dbg_a0 := regs(10.U)
+  dbg_t0 := regs(5.U)
   pc := nextPc
 }
 
