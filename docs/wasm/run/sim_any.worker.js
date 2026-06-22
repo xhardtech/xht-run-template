@@ -18,7 +18,9 @@ const Mod = await createModule();
 
 const sim_reset = Mod.cwrap('sim_reset', null, []);
 const sim_step  = Mod.cwrap('sim_step', null, ['number']);
-const wave_run  = Mod.cwrap('wave_run', 'number', ['number']);
+// wave_run may be absent in artifacts built before the waveform feature — degrade gracefully.
+const HAS_WAVE  = typeof Mod._wave_run === 'function';
+const wave_run  = HAS_WAVE ? Mod.cwrap('wave_run', 'number', ['number']) : null;
 const TERM = !!cfg.terminal;
 const uart_pop = TERM ? Mod.cwrap('uart_pop', 'number', []) : null;
 const uart_rx_push = (TERM && cfg.uart && cfg.uart.rx_valid) ? Mod.cwrap('uart_rx_push', null, ['number']) : null;
