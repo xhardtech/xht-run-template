@@ -5,14 +5,15 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <meta name="color-scheme" content="light" />
 <title>Backend B (Verilator) - generic RTL in WASM</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css" />
+<script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
 <style>
-  /* Forced LIGHT theme: explicit colors + color-scheme:light so night/incognito mode can't
-     darken it (the previous theme-less version went black in forced-dark; a dark theme read too
-     dark embedded). Bright + high-contrast, standalone and embedded in the dark /run page. */
+  /* Forced LIGHT theme + explicit colors so night/incognito mode can't darken it. */
   :root { color-scheme: light; }
-  body { font-family: system-ui, -apple-system, sans-serif; max-width: 680px; margin: 28px auto;
+  body { font-family: system-ui, -apple-system, sans-serif; max-width: 760px; margin: 28px auto;
          padding: 0 16px; background: #ffffff; color: #1a1a22; -webkit-font-smoothing: antialiased; }
   h1 { font-size: 1.25rem; color: #14141a; letter-spacing: -.01em; }
+  h2 { font-size: .95rem; color: #14141a; margin: 18px 0 6px; }
   p { color: #555560; }
   a { color: #b45309; }
   .card { border: 1px solid #e4e4ea; border-radius: 10px; padding: 20px; margin-top: 16px;
@@ -30,17 +31,25 @@
   th { color: #6a6a74; font-weight: 600; font-size: .85rem; background: #f2f2f6; }
   td { color: #1a1a22; }
   td.v { font-variant-numeric: tabular-nums; color: #b45309; font-weight: 700; }
+  #termWrap { display: none; margin-top: 10px; background: #111418; border-radius: 8px; padding: 8px; }
+  #term { width: 100%; }
+  .wavebar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .wavehint { color: #76767f; font-size: .85rem; }
+  #waveBox { margin-top: 10px; overflow-x: auto; border: 1px solid #e1e1e8; border-radius: 8px; background: #fff; }
+  #wave { display: block; }
 </style>
 </head>
 <body>
   <h1>Backend B (Verilator) &rarr; WebAssembly &mdash; generic, port-aware</h1>
   <p>The design named by <code>?top=</code> is simulated entirely in your browser.
-     The page reads <code>&lt;top&gt;.config.json</code> and renders every output port.</p>
+     The page reads <code>&lt;top&gt;.config.json</code> and renders its ports, a terminal (UART
+     designs), and a cycle-accurate waveform.</p>
   <div class="card">
     <div id="topname" class="out">--</div>
     <div class="cps" id="cps">cycles/sec: --</div>
     <div class="cps" id="cyc">cycles: --</div>
     <table id="outs"><thead><tr><th>output port</th><th>width</th><th>value</th></tr></thead><tbody></tbody></table>
+    <div id="termWrap"><div id="term"></div></div>
     <div id="status">loading worker...</div>
   </div>
   <p>
@@ -48,6 +57,14 @@
     <button id="stop">Stop</button>
     <button id="reset">Reset</button>
   </p>
+
+  <h2>Waveform <span class="wavehint">&mdash; cycle-accurate, from reset (FireSim/GTKWave-style)</span></h2>
+  <div class="wavebar">
+    <button id="waveBtn">Capture 128 cycles</button>
+    <span class="wavehint" id="waveStatus">click to snapshot the first cycles after reset</span>
+  </div>
+  <div id="waveBox"><canvas id="wave" width="700" height="40"></canvas></div>
+
 <script type="module">
   const params = new URLSearchParams(location.search);
   const top = params.get('top') || 'counter_en';
@@ -58,39 +75,107 @@
   const worker = new Worker(`./sim_any.worker.js?top=${encodeURIComponent(top)}&base=${encodeURIComponent(base)}`, { type: 'module' });
   const tbody = document.querySelector('#outs tbody');
   let rows = {};
+  let term = null, termMode = false;
+
+  function setupTerminal() {
+    document.getElementById('outs').style.display = 'none';
+    document.getElementById('termWrap').style.display = 'block';
+    term = new window.Terminal({ cols: 80, rows: 14, cursorBlink: true, convertEol: false,
+      fontSize: 13, fontFamily: 'ui-monospace, Menlo, monospace',
+      theme: { background: '#111418', foreground: '#e6e6ea', cursor: '#f59e0b' } });
+    term.open(document.getElementById('term'));
+    term.onData((data) => {
+      const bytes = []; for (let i = 0; i < data.length; i++) bytes.push(data.charCodeAt(i) & 0xff);
+      worker.postMessage({ cmd: 'input', bytes });
+    });
+  }
 
   worker.onmessage = (e) => {
     const m = e.data;
     if (m.type === 'ready') {
       statusEl.textContent = 'WASM loaded. Ready.';
-      // build output rows from config
-      tbody.innerHTML = '';
-      rows = {};
-      for (const o of m.outputs) {
-        const tr = document.createElement('tr');
-        tr.innerHTML = `<td>${o.name}</td><td>${o.width}${o.truncated ? ' (low32)' : ''}</td><td class="v">--</td>`;
-        tbody.appendChild(tr);
-        rows[o.name] = tr.querySelector('.v');
+      termMode = !!m.terminal;
+      if (termMode && window.Terminal) {
+        setupTerminal();
+      } else {
+        tbody.innerHTML = ''; rows = {};
+        for (const o of m.outputs) {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td>${o.name}</td><td>${o.width}${o.truncated ? ' (low32)' : ''}</td><td class="v">--</td>`;
+          tbody.appendChild(tr);
+          rows[o.name] = tr.querySelector('.v');
+        }
       }
       window.__ready = true;
       worker.postMessage({ cmd: 'start' });
     }
     if (m.type === 'started') statusEl.textContent = 'running...';
     if (m.type === 'stopped') statusEl.textContent = 'stopped.';
+    if (m.type === 'uartclear' && term) term.reset();
+    if (m.type === 'uart' && term) term.write(new Uint8Array(m.bytes));
     if (m.type === 'tick') {
       for (const k in m.values) if (rows[k]) rows[k].textContent = m.values[k];
       document.getElementById('cps').textContent = 'cycles/sec: ' + Math.round(m.cycles_per_sec).toLocaleString();
       document.getElementById('cyc').textContent = 'cycles: ' + m.cycles.toLocaleString();
-      window.__lastTick = m;   // exposed for puppeteer
+      window.__lastTick = m;
     }
+    if (m.type === 'wave') { renderWave(m); window.__wave = m; document.getElementById('waveStatus').textContent = `captured ${m.n} cycles × ${m.signals.length} signals`; }
   };
   worker.onerror = (e) => { statusEl.textContent = 'worker error: ' + e.message; window.__error = e.message; };
 
   document.getElementById('start').onclick = () => worker.postMessage({ cmd: 'start' });
   document.getElementById('stop').onclick  = () => worker.postMessage({ cmd: 'stop'  });
   document.getElementById('reset').onclick = () => worker.postMessage({ cmd: 'reset' });
-  // auto-start for headless verification
+  document.getElementById('waveBtn').onclick = () => { document.getElementById('waveStatus').textContent = 'capturing...'; worker.postMessage({ cmd: 'wave', n: 128 }); };
   window.__startSim = () => worker.postMessage({ cmd: 'start' });
+  window.__capture  = () => worker.postMessage({ cmd: 'wave', n: 128 });
+
+  // ---- cycle-accurate waveform renderer (canvas) ----
+  function renderWave(d) {
+    const cv = document.getElementById('wave'); if (!cv) return;
+    const sigs = d.signals || []; const n = d.n;
+    const labelW = 132, rowH = 30, padTop = 8, cw = Math.max(5, Math.min(13, Math.floor((760 - labelW) / n)));
+    const W = labelW + cw * n + 14, H = padTop + rowH * sigs.length + 8;
+    cv.width = W; cv.height = H; cv.style.width = W + 'px';
+    const ctx = cv.getContext('2d');
+    ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, W, H);
+    ctx.font = '12px ui-monospace, Menlo, monospace'; ctx.textBaseline = 'middle';
+    sigs.forEach((s, r) => {
+      const y = padTop + r * rowH, yhi = y + 6, ylo = y + rowH - 12, ymid = (yhi + ylo) / 2;
+      ctx.fillStyle = (r % 2) ? '#fafafd' : '#ffffff'; ctx.fillRect(0, y, W, rowH);
+      ctx.fillStyle = '#3a3a44'; ctx.textAlign = 'left';
+      ctx.fillText(s.name + (s.width > 1 ? `[${s.width - 1}:0]` : ''), 6, ymid);
+      const x0 = labelW, isClk = (s.name === d.clock);
+      ctx.lineWidth = 1.4;
+      if (isClk) {
+        ctx.strokeStyle = '#9aa0aa'; ctx.beginPath();
+        for (let i = 0; i < n; i++) { const x = x0 + i * cw; ctx.moveTo(x, ylo); ctx.lineTo(x + cw / 2, ylo); ctx.lineTo(x + cw / 2, yhi); ctx.lineTo(x + cw, yhi); ctx.lineTo(x + cw, ylo); }
+        ctx.stroke();
+      } else if (s.width === 1) {
+        ctx.strokeStyle = '#b45309'; ctx.beginPath();
+        let prev = null;
+        for (let i = 0; i < n; i++) { const x = x0 + i * cw, v = s.samples[i] & 1, yy = v ? yhi : ylo;
+          if (prev !== null && prev !== v) { ctx.moveTo(x, yhi); ctx.lineTo(x, ylo); }
+          ctx.moveTo(x, yy); ctx.lineTo(x + cw, yy); prev = v; }
+        ctx.stroke();
+      } else {
+        ctx.strokeStyle = '#b45309'; ctx.beginPath();
+        for (let i = 0; i < n; i++) { const x = x0 + i * cw;
+          if (i > 0 && s.samples[i] !== s.samples[i - 1]) { ctx.moveTo(x, yhi); ctx.lineTo(x, ylo); }
+          ctx.moveTo(x, yhi); ctx.lineTo(x + cw, yhi); ctx.moveTo(x, ylo); ctx.lineTo(x + cw, ylo); }
+        ctx.stroke();
+        ctx.fillStyle = '#7a4a08'; ctx.textAlign = 'center';
+        let runStart = 0;
+        for (let i = 1; i <= n; i++) {
+          if (i === n || s.samples[i] !== s.samples[i - 1]) {
+            const w = (i - runStart) * cw;
+            if (w > 18) ctx.fillText('0x' + (s.samples[runStart] >>> 0).toString(16), x0 + ((runStart + i) / 2) * cw, ymid);
+            runStart = i;
+          }
+        }
+      }
+    });
+  }
 </script>
 </body>
 </html>
