@@ -57,7 +57,7 @@ module uart_echo(
 
     localparam S_BANNER = 1'b0, S_ECHO = 1'b1;
     reg                        state;
-    reg [$clog2(BANNER_LEN):0] idx;
+    reg [$clog2(BANNER_LEN)-1:0] idx;   // 7-bit, avoids WIDTHTRUNC
 
     always @(posedge clk) begin
         if (rst) begin
