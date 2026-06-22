@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Backend B (Verilator) - generic RTL in WASM</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 680px; margin: 40px auto; padding: 0 16px; }
+  h1 { font-size: 1.25rem; }
+  .card { border: 1px solid #ccc; border-radius: 10px; padding: 20px; margin-top: 16px; }
+  .out { font-size: 1.6rem; font-variant-numeric: tabular-nums; font-weight: 700; }
+  .cps { font-size: 1.05rem; color: #444; }
+  button { font-size: 1rem; padding: 8px 16px; margin-right: 8px; border-radius: 8px;
+           border: 1px solid #888; cursor: pointer; }
+  #status { color: #777; margin-top: 10px; font-size: 0.9rem; }
+  code { background: #f2f2f2; padding: 1px 5px; border-radius: 4px; }
+  table { border-collapse: collapse; margin-top: 8px; }
+  td, th { border: 1px solid #ddd; padding: 4px 10px; text-align: left; }
+</style>
+</head>
+<body>
+  <h1>Backend B (Verilator) &rarr; WebAssembly &mdash; generic, port-aware</h1>
+  <p>The design named by <code>?top=</code> is simulated entirely in your browser.
+     The page reads <code>&lt;top&gt;.config.json</code> and renders every output port.</p>
+  <div class="card">
+    <div id="topname" class="out">--</div>
+    <div class="cps" id="cps">cycles/sec: --</div>
+    <div class="cps" id="cyc">cycles: --</div>
+    <table id="outs"><thead><tr><th>output port</th><th>width</th><th>value</th></tr></thead><tbody></tbody></table>
+    <div id="status">loading worker...</div>
+  </div>
+  <p>
+    <button id="start">Start</button>
+    <button id="stop">Stop</button>
+    <button id="reset">Reset</button>
+  </p>
+<script type="module">
+  const params = new URLSearchParams(location.search);
+  const top = params.get('top') || 'counter_en';
+  const base = params.get('base') || '.';
+  const statusEl = document.getElementById('status');
+  document.getElementById('topname').textContent = top;
+
+  const worker = new Worker(`./sim_any.worker.js?top=${encodeURIComponent(top)}&base=${encodeURIComponent(base)}`, { type: 'module' });
+  const tbody = document.querySelector('#outs tbody');
+  let rows = {};
+
+  worker.onmessage = (e) => {
+    const m = e.data;
+    if (m.type === 'ready') {
+      statusEl.textContent = 'WASM loaded. Ready.';
+      // build output rows from config
+      tbody.innerHTML = '';
+      rows = {};
+      for (const o of m.outputs) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>${o.name}</td><td>${o.width}${o.truncated ? ' (low32)' : ''}</td><td class="v">--</td>`;
+        tbody.appendChild(tr);
+        rows[o.name] = tr.querySelector('.v');
+      }
+      window.__ready = true;
+      worker.postMessage({ cmd: 'start' });
+    }
+    if (m.type === 'started') statusEl.textContent = 'running...';
+    if (m.type === 'stopped') statusEl.textContent = 'stopped.';
+    if (m.type === 'tick') {
+      for (const k in m.values) if (rows[k]) rows[k].textContent = m.values[k];
+      document.getElementById('cps').textContent = 'cycles/sec: ' + Math.round(m.cycles_per_sec).toLocaleString();
+      document.getElementById('cyc').textContent = 'cycles: ' + m.cycles.toLocaleString();
+      window.__lastTick = m;   // exposed for puppeteer
+    }
+  };
+  worker.onerror = (e) => { statusEl.textContent = 'worker error: ' + e.message; window.__error = e.message; };
+
+  document.getElementById('start').onclick = () => worker.postMessage({ cmd: 'start' });
+  document.getElementById('stop').onclick  = () => worker.postMessage({ cmd: 'stop'  });
+  document.getElementById('reset').onclick = () => worker.postMessage({ cmd: 'reset' });
+  // auto-start for headless verification
+  window.__startSim = () => worker.postMessage({ cmd: 'start' });
+</script>
+</body>
+</html>

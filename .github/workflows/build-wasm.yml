@@ -1,0 +1,118 @@
+name: build-wasm
+# Run-on-XhardTech template (FORK side). When a design is selected (xht.json), this builds
+# the RTL to WebAssembly on THIS repo's runner and publishes it to THIS repo's GitHub Pages,
+# so it runs client-side in the browser — owned by you, on your Actions minutes + your Pages.
+#
+# xht.json fields (written by the "Run on XhardTech" flow, or edit it by hand):
+#   design_repo : "self" to build this repo's own bundled RTL, OR a github/gitlab https URL
+#   top         : top module name                                           (required)
+#   rtl         : a single .v | a directory of *.v | a .f source-list       (single-file shorthand)
+#   srcdir      : MULTI-FILE: a dir whose *.v/*.sv are all compiled (a CPU)  (wins over rtl)
+#   filelist    : MULTI-FILE: a .f source-list                              (wins over srcdir)
+#   hex         : space-separated $readmemh/$readmemb data files (auto-detected if blank)
+#   memdir      : directory those data files live in (default: source dir)
+on:
+  repository_dispatch:
+    types: [build-wasm]
+  push:
+    paths: ['xht.json']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-wasm
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read xht.json
+        run: |
+          test -f xht.json || { echo "::error::xht.json missing — nothing to build yet"; exit 1; }
+          py() { python3 -c "import json;print(json.load(open('xht.json')).get('$1',''))"; }
+          { echo "REPO=$(py design_repo)"; echo "TOP=$(py top)"; echo "RTL=$(py rtl)";
+            echo "SRCDIR=$(py srcdir)"; echo "FILELIST=$(py filelist)";
+            echo "MEMFILES=$(py hex)"; echo "MEMDIR_IN=$(py memdir)"; } >> "$GITHUB_ENV"
+
+      - name: Validate
+        run: |
+          echo "$TOP" | grep -E '^[A-Za-z_][A-Za-z0-9_]*$' || { echo "::error::bad top name"; exit 1; }
+          case "$REPO" in
+            ""|self) echo "design_repo=self → building this repo's bundled RTL" ;;
+            *) echo "$REPO" | grep -E '^https://(github\.com|gitlab\.com)/[A-Za-z0-9._/-]+$' || { echo "::error::design_repo must be \"self\" or a github/gitlab https URL"; exit 1; } ;;
+          esac
+
+      - name: Install Verilator
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends verilator
+
+      - name: Patch Verilator for wasm32 (VL_CPU_RELAX arch gap)
+        run: |
+          H=/usr/share/verilator/include/verilatedos.h
+          sudo sed -i 's@# *error "Missing VL_CPU_RELAX() definition\."@# define VL_CPU_RELAX()@' "$H" || true
+
+      - uses: mymindstorm/setup-emsdk@v14
+
+      - name: Resolve design tree (clone external, or use this repo for "self")
+        run: |
+          case "$REPO" in
+            ""|self)
+              echo "DESIGN=$GITHUB_WORKSPACE" >> "$GITHUB_ENV" ;;
+            *)
+              rm -rf /tmp/design
+              GIT_TERMINAL_PROMPT=0 timeout 60 git clone --depth 1 --no-recurse-submodules "$REPO" /tmp/design
+              du -sh /tmp/design | awk '{print "design size:",$1}'
+              bash tools/wasm/scan_rtl.sh /tmp/design          # sandbox untrusted RTL
+              echo "DESIGN=/tmp/design" >> "$GITHUB_ENV" ;;
+          esac
+
+      - name: Resolve RTL source set
+        run: |
+          # precedence: filelist (.f) > srcdir (dir) > rtl (shorthand .v|dir|.f) > default <top>.v
+          if   [ -n "$FILELIST" ]; then SRC="$DESIGN/$FILELIST"
+          elif [ -n "$SRCDIR"   ]; then SRC="$DESIGN/$SRCDIR"
+          elif [ -n "$RTL"      ]; then SRC="$DESIGN/$RTL"
+          else                          SRC="$(find "$DESIGN" -name "${TOP}.v" | head -1)"
+          fi
+          { [ -f "$SRC" ] || [ -d "$SRC" ]; } || { echo "::error::RTL not found — set srcdir/filelist/rtl in xht.json ('$SRC' missing)"; exit 1; }
+          echo "SRC=$SRC" >> "$GITHUB_ENV"
+          echo "resolved source set -> $SRC"
+          if   [ -n "$MEMDIR_IN" ]; then echo "MEMDIR=$DESIGN/$MEMDIR_IN" >> "$GITHUB_ENV"
+          elif [ -d "$SRC"       ]; then echo "MEMDIR=$SRC"               >> "$GITHUB_ENV"
+          else                           echo "MEMDIR=$(dirname "$SRC")"  >> "$GITHUB_ENV"
+          fi
+
+      - name: Build WASM
+        run: |
+          OUT="docs/wasm/run/${TOP}"
+          rm -rf "$OUT"; mkdir -p "$OUT"
+          MEMFILES="$MEMFILES" MEMDIR="$MEMDIR" bash tools/wasm/build_wasm_any.sh "$SRC" "$TOP" "$OUT"
+          find "$OUT" -mindepth 1 ! -name "V${TOP}.mjs" ! -name "V${TOP}.wasm" ! -name "${TOP}.config.json" -prune -exec rm -rf {} +
+          ls -la "$OUT"
+
+      - name: Publish to this repo's Pages
+        run: |
+          OWNER="${GITHUB_REPOSITORY%%/*}"; NAME="${GITHUB_REPOSITORY##*/}"
+          RUN="wasm/run/runner.html?top=${TOP}&base=/${NAME}/wasm/run/${TOP}"
+          # point the Pages root at the freshly-built design so the site root always works
+          mkdir -p docs
+          {
+            echo '<!doctype html><html lang=en><head><meta charset=utf-8>'
+            echo "<title>${TOP} — Run on XhardTech</title>"
+            echo "<meta http-equiv=refresh content=\"0; url=${RUN}\">"
+            echo '<style>body{font-family:system-ui;background:#0a0a0f;color:#ededf2;padding:40px;line-height:1.6}a{color:#f59e0b}</style></head><body>'
+            echo "<p>Running <b>${TOP}</b> in your browser (WebAssembly). If you are not redirected, <a href=\"${RUN}\">open the runner →</a></p>"
+            echo '<p style="color:#8c8c9c;font-size:.85rem">Built by your own GitHub Actions, served from your own GitHub Pages. Powered by <a href="https://xhardtech.com">XhardTech</a>.</p>'
+            echo '</body></html>'
+          } > docs/index.html
+          git config user.name  "xhardtech-runner"
+          git config user.email "actions@users.noreply.github.com"
+          git add -f "docs/index.html" "docs/wasm/run/${TOP}"
+          git commit -m "wasm: build ${TOP} (design_repo=${REPO:-self})" || { echo "no change"; exit 0; }
+          git push
+          echo "::notice::Live at https://${OWNER}.github.io/${NAME}/${RUN}"

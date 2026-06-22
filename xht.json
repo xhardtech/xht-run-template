@@ -1,0 +1,6 @@
+{
+  "design_repo": "self",
+  "top": "lfsr8",
+  "rtl": "examples/lfsr8.v",
+  "_comment": "Edit this to point at YOUR design, then push (or use the 'Run on XhardTech' button). design_repo can be \"self\" (build the RTL bundled in this repo) or a github/gitlab https URL. For a multi-file CPU set \"srcdir\":\"rtl\" instead of \"rtl\". $readmemh data files are auto-detected; override with \"hex\":\"prog.hex\"."
+}

@@ -1,0 +1,164 @@
+#!/usr/bin/env bash
+# Port-aware, design-agnostic Verilator->WASM build pipeline.
+#
+#   Single file (backward compatible):
+#       ./build_wasm_any.sh <rtl.v> <top> [outdir]
+#
+#   Multi-file source set (NEW): pass a DIRECTORY or a SOURCE-LIST file as the
+#   first arg, OR list every .v after the top with --srcs:
+#       ./build_wasm_any.sh <dir/>           <top> [outdir]   # all *.v in dir
+#       ./build_wasm_any.sh <sources.f>      <top> [outdir]   # one path per line (.f list)
+#       ./build_wasm_any.sh --srcs <top> [outdir] a.v b.v ...  # explicit list
+#
+#   Memory-init ($readmemh / $readmemb): NEW. Any hex/mem data file the RTL loads is
+#   embedded into the wasm filesystem so the runtime $readmemh("file") resolves at boot.
+#   Auto-detected from the RTL ($readmem*("...")) OR forced via env:
+#       MEMFILES="blink32.hex other.mem"  ./build_wasm_any.sh ...
+#   MEMDIR (default: dir of the first source) is where those files are looked up.
+#
+#   1. verilator --xml-only -> ports; 2. gen_harness.py -> harness+config;
+#   3. verilator --cc -O3; 4. emcc -> V<top>.mjs + V<top>.wasm (+ embedded mem files)
+# Works with Verilator 4.038 (local) and 5.020 (Ubuntu runner).
+set -euo pipefail
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+VINC="/usr/share/verilator/include"
+
+# ---- argument parsing: collect the source set + top + outdir -----------------
+SRCS=()        # list of .v files passed to verilator
+TOP=""
+OUTDIR=""
+
+if [ "${1:-}" = "--srcs" ]; then
+  # ./build_wasm_any.sh --srcs <top> [outdir] file1.v file2.v ...
+  shift
+  TOP="${1:?usage: --srcs <top> [outdir] <files...>}"; shift
+  # next arg is outdir only if it is NOT a .v file
+  if [ -n "${1:-}" ] && [ "${1##*.}" != "v" ]; then OUTDIR="$1"; shift; fi
+  SRCS=("$@")
+else
+  # ./build_wasm_any.sh <rtl.v | dir | list.f> <top> [outdir]
+  SRC1="${1:?usage: build_wasm_any.sh <rtl.v|dir|list.f> <top> [outdir]}"
+  TOP="${2:?usage: build_wasm_any.sh <rtl.v|dir|list.f> <top> [outdir]}"
+  OUTDIR="${3:-$HERE}"
+  if [ -d "$SRC1" ]; then
+    # directory: take every *.v / *.sv (sorted, stable)
+    while IFS= read -r f; do SRCS+=("$f"); done < <(find "$SRC1" -maxdepth 1 \( -name '*.v' -o -name '*.sv' \) | sort)
+  elif [ -f "$SRC1" ] && { [ "${SRC1##*.}" = "f" ] || head -1 "$SRC1" 2>/dev/null | grep -qE '\.s?v\s*$'; }; then
+    # a .f source-list file: one path per line ('#' comments + blanks skipped),
+    # paths resolved relative to the list file's directory if not absolute
+    LISTDIR="$(cd "$(dirname "$SRC1")" && pwd)"
+    while IFS= read -r line; do
+      line="${line%%#*}"; line="$(echo "$line" | xargs || true)"
+      [ -z "$line" ] && continue
+      case "$line" in /*) SRCS+=("$line");; *) SRCS+=("$LISTDIR/$line");; esac
+    done < "$SRC1"
+  else
+    SRCS=("$SRC1")
+  fi
+fi
+
+[ -n "${OUTDIR:-}" ] || OUTDIR="$HERE"
+[ "${#SRCS[@]}" -ge 1 ] || { echo "no source files resolved"; exit 1; }
+for f in "${SRCS[@]}"; do [ -f "$f" ] || { echo "RTL not found: $f"; exit 1; }; done
+
+command -v verilator >/dev/null || { echo "verilator not on PATH"; exit 1; }
+command -v emcc      >/dev/null || { echo "emcc not on PATH (source emsdk_env.sh)"; exit 1; }
+mkdir -p "$OUTDIR"
+
+XDIR="${OUTDIR}/obj_xml_${TOP}"
+MDIR="${OUTDIR}/obj_dir_${TOP}_wasm"
+OUT="${OUTDIR}/V${TOP}.mjs"
+
+echo "[1/5] source set (${#SRCS[@]} file(s)):"
+for f in "${SRCS[@]}"; do echo "        $f"; done
+
+# ---- memory-init files: which $readmem* data files must be embedded? ---------
+# MEMDIR defaults to the directory of the first source file.
+MEMDIR="${MEMDIR:-$(cd "$(dirname "${SRCS[0]}")" && pwd)}"
+MEMFILES_ARR=()
+if [ -n "${MEMFILES:-}" ]; then
+  for m in $MEMFILES; do MEMFILES_ARR+=("$m"); done
+else
+  # auto-detect: scrape $readmemh("file",...) / $readmemb("file",...) literals from the RTL
+  while IFS= read -r m; do
+    [ -n "$m" ] && MEMFILES_ARR+=("$m")
+  done < <(grep -hoE '\$readmem[hb][[:space:]]*\([[:space:]]*"[^"]+"' "${SRCS[@]}" 2>/dev/null \
+             | grep -oE '"[^"]+"' | tr -d '"' | sort -u)
+fi
+
+EMBED_ARGS=()
+if [ "${#MEMFILES_ARR[@]}" -ge 1 ]; then
+  echo "[2/5] memory-init files to embed into wasm FS:"
+  for m in "${MEMFILES_ARR[@]}"; do
+    # resolve path: absolute, else relative to MEMDIR
+    case "$m" in /*) src="$m";; *) src="$MEMDIR/$m";; esac
+    [ -f "$src" ] || { echo "  !! $m not found (looked in $MEMDIR) -- \$readmemh will fail at runtime"; exit 1; }
+    # embed at the BASENAME the RTL reads (e.g. $readmemh("count32.hex") -> /count32.hex
+    # in the wasm FS, which is CWD '/' for the runtime). --embed-file <src>@<dst>.
+    bn="$(basename "$m")"
+    cp -f "$src" "${OUTDIR}/${bn}"
+    EMBED_ARGS+=( --embed-file "${OUTDIR}/${bn}@/${bn}" )
+    echo "        $src  ->  wasm FS /$bn"
+  done
+else
+  echo "[2/5] no \$readmem* files detected -- nothing to embed."
+fi
+
+echo "[3/5] verilator --xml-only (ports of '$TOP') ..."
+rm -rf "$XDIR"
+verilator --xml-only --top-module "$TOP" "${SRCS[@]}" --Mdir "$XDIR"
+XML="${XDIR}/V${TOP}.xml"
+[ -f "$XML" ] || { echo "XML not produced: $XML"; exit 1; }
+
+echo "      codegen harness + config from ports ..."
+python3 "${HERE}/gen_harness.py" "$XML" "$TOP" "$OUTDIR"
+HARNESS="${OUTDIR}/sim_main_${TOP}_wasm.cpp"
+EXPORTS="$(cat "${OUTDIR}/${TOP}.exports.txt")"
+[ -f "$HARNESS" ] || { echo "harness codegen failed"; exit 1; }
+echo "      exported funcs: $EXPORTS"
+
+echo "[4/5] verilator --cc -O3 -> C++ model ..."
+rm -rf "$MDIR"
+verilator --cc -O3 --top-module "$TOP" "${SRCS[@]}" --Mdir "$MDIR"
+
+# Aggregate EVERY generated TU into one emcc compilation unit. Verilator emits per-class
+# files (V<top>.cpp, __Slow, __Syms, ___024root*, __ConstPool*, ...) whose names vary by
+# version, so include them ALL (except any __ALL aggregate) to avoid undefined symbols.
+ALL="${MDIR}/V${TOP}__ALL_emcc.cpp"
+{
+  echo "// auto aggregate TU for emcc"
+  for f in "$MDIR"/V${TOP}*.cpp; do
+    bn="$(basename "$f")"
+    case "$bn" in V${TOP}__ALL.cpp|V${TOP}__ALL_emcc.cpp) continue;; esac
+    echo "#include \"$bn\""
+  done
+} > "$ALL"
+
+# Verilator runtime: verilated.cpp only. We do NOT compile verilated_threads.cpp (it needs
+# std::thread/-pthread, which would require SharedArrayBuffer+COOP/COEP — unavailable on GitHub
+# Pages). Single-threaded models never construct VlThreadPool, so its symbol (referenced in
+# 5.x verilated.cpp's lazy thread-pool path but never called) is left undefined and tolerated
+# via -sERROR_ON_UNDEFINED_SYMBOLS=0 below.
+RT=("${VINC}/verilated.cpp")
+
+# -sFORCE_FILESYSTEM ensures the FS is linked in even when only $readmemh uses it; the
+# embedded files (EMBED_ARGS) are mounted at boot so the runtime fopen()/$readmemh resolve.
+FS_ARGS=()
+if [ "${#EMBED_ARGS[@]}" -ge 1 ]; then FS_ARGS+=( -sFORCE_FILESYSTEM ); fi
+
+echo "[5/5] emcc -> ${OUT} + V${TOP}.wasm ..."
+emcc -O3 \
+  -I "$MDIR" -I "$VINC" \
+  "$ALL" \
+  "$HARNESS" \
+  "${RT[@]}" \
+  -sMODULARIZE -sEXPORT_ES6 -sALLOW_MEMORY_GROWTH \
+  -sERROR_ON_UNDEFINED_SYMBOLS=0 \
+  -sEXPORTED_RUNTIME_METHODS=ccall,cwrap \
+  -sEXPORTED_FUNCTIONS="$EXPORTS" \
+  "${FS_ARGS[@]}" \
+  "${EMBED_ARGS[@]}" \
+  -o "$OUT"
+
+echo "Done: ${OUT} ($(stat -c%s "${OUTDIR}/V${TOP}.wasm") bytes wasm); config=${OUTDIR}/${TOP}.config.json"
