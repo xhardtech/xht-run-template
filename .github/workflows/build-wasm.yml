@@ -77,15 +77,31 @@ jobs:
           if   [ -n "$FILELIST" ]; then SRC="$DESIGN/$FILELIST"
           elif [ -n "$SRCDIR"   ]; then SRC="$DESIGN/$SRCDIR"
           elif [ -n "$RTL"      ]; then SRC="$DESIGN/$RTL"
-          else                          SRC="$(find "$DESIGN" -name "${TOP}.v" | head -1)"
+          else
+            # AUTO-DETECT: Chisel sources (*.scala) win, else <top>.v.
+            SCALA1="$(find "$DESIGN" -name '*.scala' -not -path '*/project/*' -not -path '*/target/*' | head -1)"
+            if [ -n "$SCALA1" ]; then SRC="$DESIGN"; echo "auto-detected Chisel sources under $DESIGN";
+            else SRC="$(find "$DESIGN" -name "${TOP}.v" | head -1)"; fi
           fi
-          { [ -f "$SRC" ] || [ -d "$SRC" ]; } || { echo "::error::RTL not found — set srcdir/filelist/rtl in xht.json ('$SRC' missing)"; exit 1; }
+          { [ -f "$SRC" ] || [ -d "$SRC" ]; } || { echo "::error::RTL not found — set rtl=<.v|.scala>/srcdir/filelist in xht.json ('$SRC' missing)"; exit 1; }
           echo "SRC=$SRC" >> "$GITHUB_ENV"
           echo "resolved source set -> $SRC"
+          if echo "$SRC" | grep -q '\.scala$' || { [ -d "$SRC" ] && find "$SRC" -name '*.scala' -not -path '*/project/*' -not -path '*/target/*' | grep -q .; }; then
+            echo "CHISEL=1" >> "$GITHUB_ENV"; echo "Chisel design detected"
+          fi
           if   [ -n "$MEMDIR_IN" ]; then echo "MEMDIR=$DESIGN/$MEMDIR_IN" >> "$GITHUB_ENV"
           elif [ -d "$SRC"       ]; then echo "MEMDIR=$SRC"               >> "$GITHUB_ENV"
           else                           echo "MEMDIR=$(dirname "$SRC")"  >> "$GITHUB_ENV"
           fi
+
+      - name: Setup Chisel toolchain (scala-cli) — only for Chisel designs
+        if: env.CHISEL == '1'
+        run: |
+          # Chisel design: elaborate Scala -> SystemVerilog (firtool) before Verilator. JDK is
+          # preinstalled; scala-cli auto-resolves Chisel + firtool (rocket-chip-style flow).
+          curl -fsSL https://github.com/VirtusLab/scala-cli/releases/download/v1.5.0/scala-cli-x86_64-pc-linux.gz | gunzip > /usr/local/bin/scala-cli
+          chmod +x /usr/local/bin/scala-cli
+          java -version; /usr/local/bin/scala-cli version || true
 
       - name: Build WASM
         run: |
