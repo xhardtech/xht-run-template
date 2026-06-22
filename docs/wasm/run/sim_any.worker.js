@@ -38,6 +38,9 @@ function driveDefaults() {
 
 const BATCH = 20000;
 let running = false, cycles = 0, t0 = 0;
+// Keystrokes are queued and fed ONE byte per loop iteration (not all at once): a CPU SoC needs
+// many cycles to poll+read each RX byte, so feeding faster would overwrite the holding register.
+let rxQueue = [];
 
 function readAll() {
   const v = {};
@@ -53,6 +56,7 @@ function drainUart() {
 
 function loop() {
   if (!running) return;
+  if (uart_rx_push && rxQueue.length) uart_rx_push(rxQueue.shift()); // pace RX: 1 byte per iteration
   for (let i = 0; i < 50; i++) { sim_step(BATCH); cycles += BATCH; }
   drainUart();
   const wall = (performance.now() - t0) / 1000;
@@ -94,7 +98,7 @@ onmessage = (e) => {
     if (TERM) postMessage({ type: 'uartclear' });
     postMessage({ type: 'tick', values: readAll(), cycles: 0, cycles_per_sec: 0 });
   } else if (cmd === 'input') {
-    if (uart_rx_push && Array.isArray(m.bytes)) for (const b of m.bytes) uart_rx_push(b & 0xff);
+    if (uart_rx_push && Array.isArray(m.bytes)) for (const b of m.bytes) rxQueue.push(b & 0xff);
   } else if (cmd === 'wave') {
     captureWave(m.n);
   }
