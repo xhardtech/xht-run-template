@@ -107,7 +107,10 @@ fi
 
 echo "[3/5] verilator --xml-only (ports of '$TOP') ..."
 rm -rf "$XDIR"
-verilator --xml-only --top-module "$TOP" "${SRCS[@]}" --Mdir "$XDIR"
+# -Wno-fatal: arbitrary user / Chisel-generated RTL routinely trips benign lint warnings
+# (WIDTHTRUNC, UNUSEDSIGNAL, CASEINCOMPLETE, ...). Verilator 5.x treats warnings as fatal by
+# default; for a "run any design" service we must NOT let a benign warning abort the build.
+verilator --xml-only -Wno-fatal --top-module "$TOP" "${SRCS[@]}" --Mdir "$XDIR"
 XML="${XDIR}/V${TOP}.xml"
 [ -f "$XML" ] || { echo "XML not produced: $XML"; exit 1; }
 
@@ -120,7 +123,7 @@ echo "      exported funcs: $EXPORTS"
 
 echo "[4/5] verilator --cc -O3 -> C++ model ..."
 rm -rf "$MDIR"
-verilator --cc -O3 --top-module "$TOP" "${SRCS[@]}" --Mdir "$MDIR"
+verilator --cc -O3 -Wno-fatal --top-module "$TOP" "${SRCS[@]}" --Mdir "$MDIR"
 
 # Aggregate EVERY generated TU into one emcc compilation unit. Verilator emits per-class
 # files (V<top>.cpp, __Slow, __Syms, ___024root*, __ConstPool*, ...) whose names vary by
